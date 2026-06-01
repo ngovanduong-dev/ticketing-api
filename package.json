@@ -9,7 +9,10 @@
     "db:seed": "node prisma/seed.js",
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -40,8 +43,11 @@
   },
   "devDependencies": {
     "@types/node": "^25.8.0",
+    "@vitest/coverage-v8": "^4.1.7",
     "nodemon": "^3.1.14",
     "prisma": "^7.8.0",
-    "typescript": "^6.0.3"
+    "supertest": "^7.2.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.7"
   }
 }
