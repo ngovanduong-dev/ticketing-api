@@ -19,18 +19,20 @@ const listEventsQuerySchema = z.object({
   categoryId: z.string().uuid().optional(),
   from: z.string().datetime({ message: 'Invalid from date format.' }).optional(),
   to: z.string().datetime({ message: 'Invalid to date format.' }).optional(),
+  q: z.string().trim().min(1).max(100).optional(),
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(20),
 });
 
 const listEvents = catchAsync(async (req, res) => {
-  const { categoryId, from, to, page, limit } = listEventsQuerySchema.parse(req.query);
+  const { categoryId, from, to, q, page, limit } = listEventsQuerySchema.parse(req.query);
 
   const skip = (page - 1) * limit;
 
   const where = {
     status: 'PUBLISHED',
     ...(categoryId && { categoryId }),
+    ...(q && { title: { contains: q, mode: 'insensitive' } }),
     ...((from || to) && {
       date: {
         ...(from && { gte: new Date(from) }),

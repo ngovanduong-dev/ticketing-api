@@ -64,12 +64,20 @@ const cleanupTestData = async () => {
       OR: [
         { user: { is: { email: { startsWith: TEST_PREFIX } } } },
         { event: { is: { title: { startsWith: TEST_PREFIX } } } },
+        { event: { is: { category: { is: { slug: { startsWith: TEST_PREFIX } } } } } },
+        { event: { is: { organizer: { is: { email: { startsWith: TEST_PREFIX } } } } } },
       ],
     },
   });
 
   await prisma.event.deleteMany({
-    where: { title: { startsWith: TEST_PREFIX } },
+    where: {
+      OR: [
+        { title: { startsWith: TEST_PREFIX } },
+        { category: { is: { slug: { startsWith: TEST_PREFIX } } } },
+        { organizer: { is: { email: { startsWith: TEST_PREFIX } } } },
+      ],
+    },
   });
 
   await prisma.category.deleteMany({
