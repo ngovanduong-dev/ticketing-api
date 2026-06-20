@@ -46,6 +46,9 @@ model Event {
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
+  @@index([status, date])
+  @@index([categoryId, status, date])
+  @@index([organizerId])
   @@map("events")
 }
 
@@ -61,6 +64,8 @@ model Booking {
   createdAt  DateTime      @default(now())
   updatedAt  DateTime      @updatedAt
 
+  @@index([userId, createdAt])
+  @@index([eventId, status])
   @@map("bookings")
 }
 
