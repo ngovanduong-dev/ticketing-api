@@ -1,7 +1,10 @@
 require('dotenv').config();
+const { randomUUID } = require('crypto');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
+const pinoHttp = require('pino-http');
+const logger = require('./lib/logger');
 const { errorHandler } = require('./middlewares/error.middleware');
 const { globalLimiter } = require('./middlewares/rateLimit.middleware');
 const routes = require('./routes');
@@ -16,6 +19,23 @@ app.use(cors({
   origin: process.env.CLIENT_URL || '*',
   methods: ['GET', 'POST', 'PATCH', 'DELETE'],
 }));
+
+if (process.env.NODE_ENV !== 'test') {
+  app.use(
+    pinoHttp({
+      logger,
+      genReqId: (req) => req.headers['x-request-id'] || randomUUID(),
+      customLogLevel: (req, res, err) => {
+        if (err || res.statusCode >= 500) return 'error';
+        if (res.statusCode >= 400) return 'warn';
+        return 'info';
+      },
+      autoLogging: {
+        ignore: (req) => req.url === '/' || req.url === '/health',
+      },
+    })
+  );
+}
 
 app.use(express.json());
 

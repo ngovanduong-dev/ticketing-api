@@ -1,5 +1,6 @@
 const { z } = require('zod');
 const prisma = require('../lib/prisma');
+const logger = require('../lib/logger');
 const AppError = require('../utils/AppError');
 const { catchAsync } = require('../middlewares/error.middleware');
 
@@ -33,6 +34,17 @@ const createBooking = catchAsync(async (req, res) => {
     const available = Number(event.capacity) - totalBooked;
 
     if (quantity > available) {
+      logger.warn(
+        {
+          eventId,
+          userId: req.user.id,
+          requestedQuantity: quantity,
+          available,
+          totalBooked,
+        },
+        'Booking rejected because event capacity is insufficient'
+      );
+
       throw new AppError(
         available === 0 ? 'Event is sold out' : `Only ${available} tickets available`,
         409
@@ -48,6 +60,16 @@ const createBooking = catchAsync(async (req, res) => {
       },
     });
   });
+
+  logger.info(
+    {
+      bookingId: booking.id,
+      eventId,
+      userId: req.user.id,
+      quantity,
+    },
+    'Booking created'
+  );
 
   res.status(201).json({ status: 'success', data: { booking } });
 });
@@ -84,6 +106,15 @@ const cancelBooking = catchAsync(async (req, res) => {
       event: { select: { id: true, title: true, date: true } },
     },
   });
+
+  logger.info(
+    {
+      bookingId: updated.id,
+      eventId: updated.eventId,
+      userId: req.user.id,
+    },
+    'Booking cancelled'
+  );
 
   res.json({ status: 'success', data: { booking: updated } });
 });
