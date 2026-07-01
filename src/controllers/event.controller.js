@@ -1,5 +1,6 @@
 const { z } = require('zod');
 const prisma = require('../lib/prisma');
+const logger = require('../lib/logger');
 const AppError = require('../utils/AppError');
 const { catchAsync } = require('../middlewares/error.middleware');
 
@@ -108,6 +109,15 @@ const createEvent = catchAsync(async (req, res) => {
     include: { category: true, organizer: { select: { id: true, name: true } } },
   });
 
+  logger.info(
+    {
+      eventId: event.id,
+      organizerId: req.user.id,
+      categoryId: event.categoryId,
+    },
+    'Event created'
+  );
+
   res.status(201).json({ status: 'success', data: { event } });
 });
 
@@ -134,6 +144,15 @@ const updateEvent = catchAsync(async (req, res) => {
     include: { category: true },
   });
 
+  logger.info(
+    {
+      eventId: updated.id,
+      organizerId: req.user.id,
+      updatedFields: Object.keys(data),
+    },
+    'Event updated'
+  );
+
   res.json({ status: 'success', data: { event: updated } });
 });
 
@@ -146,6 +165,14 @@ const deleteEvent = catchAsync(async (req, res) => {
     where: { id: req.params.id },
     data: { status: 'CANCELLED' },
   });
+
+  logger.info(
+    {
+      eventId: req.params.id,
+      organizerId: req.user.id,
+    },
+    'Event cancelled'
+  );
 
   res.status(204).send();
 });

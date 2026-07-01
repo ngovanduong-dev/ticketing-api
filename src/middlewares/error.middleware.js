@@ -1,4 +1,5 @@
 const { ZodError } = require('zod');
+const logger = require('../lib/logger');
 
 const errorHandler = (err, req, res, next) => {
   if (err instanceof ZodError) {
@@ -23,7 +24,16 @@ const errorHandler = (err, req, res, next) => {
     });
   }
 
-  console.error('Unexpected error:', err);
+  logger.error(
+    {
+      err,
+      requestId: req.id,
+      method: req.method,
+      path: req.originalUrl || req.path,
+    },
+    'Unexpected error'
+  );
+
   res.status(500).json({
     status: 'error',
     message: 'Internal server error',
