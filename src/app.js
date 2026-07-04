@@ -5,6 +5,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const pinoHttp = require('pino-http');
 const logger = require('./lib/logger');
+const { getHealth } = require('./controllers/health.controller');
 const { errorHandler } = require('./middlewares/error.middleware');
 const { globalLimiter } = require('./middlewares/rateLimit.middleware');
 const routes = require('./routes');
@@ -39,9 +40,11 @@ if (process.env.NODE_ENV !== 'test') {
 
 app.use(express.json());
 
-app.get(['/', '/health'], (req, res) => {
+app.get('/', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+app.get('/health', getHealth);
 
 app.use(globalLimiter);
 
