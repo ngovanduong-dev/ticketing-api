@@ -98,4 +98,32 @@ describe('bookings integration', () => {
 
     expect(res.status).toBe(403);
   });
+
+  it('rejects cancelling a booking for a past event', async () => {
+    const { user: organizer } = await createTestUser('ORGANIZER');
+    const { user: attendee, token } = await createTestUser('ATTENDEE');
+    const category = await createTestCategory();
+    const event = await createTestEvent(organizer.id, category.id, {
+      date: new Date(Date.now() - 24 * 60 * 60 * 1000),
+    });
+    const booking = await prisma.booking.create({
+      data: {
+        eventId: event.id,
+        userId: attendee.id,
+        quantity: 1,
+        totalPrice: 100000,
+        status: 'CONFIRMED',
+      },
+    });
+
+    const res = await request(app)
+      .delete(`/api/v1/bookings/${booking.id}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    const persisted = await prisma.booking.findUnique({ where: { id: booking.id } });
+
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe('Cannot cancel booking for past events');
+    expect(persisted.status).toBe('CONFIRMED');
+  });
 });
