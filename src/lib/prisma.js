@@ -1,3 +1,6 @@
+require('../config/environment').validateDatabaseUrl(process.env.DATABASE_URL);
+require('../config/test-environment').assertTestDatabaseSelected();
+
 const { Pool } = require('pg');
 const { PrismaPg } = require('@prisma/adapter-pg');
 const { PrismaClient } = require('@prisma/client');

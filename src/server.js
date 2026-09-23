@@ -1,15 +1,20 @@
-const app = require('./app');
+const { validateEnvironment } = require('./config/environment');
 
-const requiredEnvVars = ['DATABASE_URL', 'JWT_SECRET'];
-for (const key of requiredEnvVars) {
-  if (!process.env[key]) {
-    console.error(`Missing required environment variable: ${key}`);
-    process.exit(1);
+let config;
+try {
+  if (process.env.NODE_ENV === 'test') {
+    require('./config/test-environment').configureTestEnvironment();
+  } else {
+    require('dotenv').config({ quiet: true });
   }
+  config = validateEnvironment();
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
 }
 
-const PORT = process.env.PORT || 3000;
+const app = require('./app');
 
-app.listen(PORT, () => {
-  console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
+app.listen(config.port, () => {
+  console.log(`Server running in ${process.env.NODE_ENV} mode on port ${config.port}`);
 });

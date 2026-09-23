@@ -1,4 +1,5 @@
-require('dotenv').config();
+require('./config/environment').validateEnvironment();
+require('./config/test-environment').assertTestDatabaseSelected();
 const { randomUUID } = require('crypto');
 const express = require('express');
 const cors = require('cors');

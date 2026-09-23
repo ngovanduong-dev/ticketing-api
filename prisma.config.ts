@@ -1,4 +1,8 @@
-require("dotenv/config");
+if (process.env.NODE_ENV === 'test') {
+  require('./src/config/test-environment').configureTestEnvironment();
+} else {
+  require('dotenv').config({ quiet: true });
+}
 const { defineConfig } = require("prisma/config");
 
 module.exports = defineConfig({

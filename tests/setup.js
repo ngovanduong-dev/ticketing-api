@@ -1,4 +1,4 @@
-require('dotenv').config({ path: '.env.test' });
+require('../src/config/test-environment').configureTestEnvironment();
 
 const { prisma, cleanupTestData } = require('./helpers');
 
