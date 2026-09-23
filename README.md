@@ -6,7 +6,7 @@ A RESTful API for an event ticketing system where organizers can create and mana
 
 ## 🚀 Tech Stack
 
-- **Runtime:** Node.js 20 LTS
+- **Runtime:** Node.js 24 LTS (supported major line: `24.x`)
 - **Framework:** Express 5
 - **Database:** PostgreSQL
 - **ORM:** Prisma
@@ -37,7 +37,7 @@ prisma/
 
 ### 1. Prerequisites
 
-- Node.js 20+ installed on your local machine.
+- Node.js 24 LTS installed on your local machine (`nvm use` reads `.nvmrc`).
 - PostgreSQL database running locally (or using a cloud provider like Neon).
 
 _If you prefer running PostgreSQL via Docker, you can start a container using:_
@@ -53,7 +53,7 @@ Clone the repository and install the dependencies:
 ```bash
 git clone https://github.com/ngovanduong-dev/ticketing-api.git
 cd ticketing-api
-npm install
+npm ci
 ```
 
 ### 3. Environment Setup
@@ -76,11 +76,12 @@ NODE_ENV="development"
 
 ### 4. Database Setup & Migrations
 
-Run the database migrations and seed the initial development database:
+Generate the Prisma client, apply the committed migrations, and seed the initial development database:
 
 ```bash
-# Run migrations to create database tables
-npm run db:migrate
+npm run db:generate
+npx prisma validate
+npx prisma migrate deploy
 
 # Seed database with initial categories, users, and events
 npm run db:seed
@@ -100,13 +101,86 @@ The API server will be available at `http://localhost:3000`. You can check the s
 curl http://localhost:3000/health
 ```
 
+The server loads `.env` and validates `DATABASE_URL`, `JWT_SECRET`, and the optional
+TCP `PORT` (1–65535, default 3000) before importing the application and its database
+resources. Direct imports of `src/app.js` require an already configured environment;
+the app no longer loads `.env` as an import side effect.
+
+## Regression tests with disposable PostgreSQL
+
+Use a dedicated local PostgreSQL 16 container containing no data you need to keep:
+
+```bash
+docker run --name ticketing-test-db --rm -d -p 127.0.0.1:55432:5432 -e POSTGRES_USER=ticketing_test -e POSTGRES_PASSWORD=local-test-only -e POSTGRES_DB=ticketing_test postgres:16
+docker exec ticketing-test-db pg_isready -U ticketing_test -d ticketing_test
+```
+
+Wait for `pg_isready` to report accepting connections before running migrations.
+Copy `.env.test.example` to `.env.test`. Its credentials are for this disposable
+container only. Keep `.env.test` uncommitted. It supplies `TEST_DATABASE_URL` and a
+test-only `JWT_SECRET`; externally supplied variables take precedence.
+
+In Bash, set test mode for the Prisma CLI and run:
+
+```bash
+export NODE_ENV=test
+npm ci
+npm run db:generate
+npx prisma validate
+npx prisma migrate deploy
+npm test
+```
+
+In PowerShell, use `$env:NODE_ENV = 'test'` instead of `export NODE_ENV=test`, then
+run the same npm/Prisma commands. Test-mode Prisma commands and the test bootstrap
+load only `.env.test`, validate its required values, and then select
+`TEST_DATABASE_URL` as the process's `DATABASE_URL`. No seed or migration reset is
+needed. `npm run test:config` runs only the configuration/module-boundary checks,
+without connecting to a database. `npm test` also runs all existing Vitest tests,
+including the ten-request last-ticket booking concurrency regression.
+
+The test URL must use `postgresql://` or `postgres://`, a numeric loopback host
+(`127.0.0.1` or `[::1]`), explicit credentials and port, and a database named
+`ticketing_test` or `ticketing_test_*` (suffix: lowercase letters, digits and
+underscores). Query parameters and fragments are rejected, including `?schema=public`,
+to prevent connection-option overrides. Missing or invalid explicit configuration
+fails before helpers/application database resources are imported; ordinary
+`DATABASE_URL` and `.env` are never fallback test targets.
+
+This is an accidental-target guard, not proof that a database is disposable.
+Never point the allowed loopback address at a tunnel/proxy to a shared or remote
+database, or reuse a local database containing valuable data. The `vitest-*` data
+prefix helps cleanup; it does not isolate database connections or transactions.
+Always use a fresh dedicated instance, and do not run multiple suites against the
+same database concurrently.
+
+The GitHub Actions workflow runs on Ubuntu with Node 24 and a fresh PostgreSQL 16
+service. It performs the five commands above, applying only committed migrations
+before running the suite. Local verification used Node 24.21.0 and PostgreSQL
+16.15: both migrations applied to an empty database, 11 configuration tests and
+all 30 existing regressions passed. See the PR's actual Actions result for CI
+status; the workflow does not verify deployment or production behavior.
+
+When finished, remove the disposable instance and unset test mode before ordinary
+development commands:
+
+```bash
+docker stop ticketing-test-db
+unset NODE_ENV
+```
+
+In PowerShell, use `Remove-Item Env:NODE_ENV` instead of `unset NODE_ENV`.
+
 ---
 
 ## ⚙️ Available Scripts
 
 - `npm run dev` - Starts the development server with `nodemon`.
 - `npm start` - Starts the production server.
-- `npm run db:migrate` - Applies Prisma database migrations.
+- `npm run db:migrate` - Creates/applies migrations during development (`prisma migrate dev`).
+- `npm run db:generate` - Generates the Prisma client from the committed schema.
+- `npm test` - Runs configuration checks and the PostgreSQL-backed regression suite.
+- `npm run test:config` - Runs configuration checks without a database connection.
 - `npm run db:seed` - Seeds the database with mock data.
 - `npm run db:studio` - Opens Prisma Studio GUI to view/edit database records.
 

@@ -10,12 +10,13 @@
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
     "db:studio": "prisma studio",
-    "test": "vitest run",
+    "test": "npm run test:config && vitest run",
+    "test:config": "node --test tests/config/*.test.cjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": "24.x"
   },
   "repository": {
     "type": "git",

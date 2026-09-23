@@ -1,5 +1,6 @@
 export default {
   test: {
+    include: ['tests/*.test.js'],
     environment: 'node',
     globals: true,
     setupFiles: ['./tests/setup.js'],
