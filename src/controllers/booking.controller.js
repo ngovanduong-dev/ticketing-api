@@ -13,6 +13,7 @@ const createBooking = catchAsync(async (req, res) => {
   const { eventId, quantity } = createBookingSchema.parse(req.body);
 
   const booking = await prisma.$transaction(async (tx) => {
+    // Match capacity updates: lock the event first, then read confirmed quantity.
     const rows = await tx.$queryRaw`
       SELECT "id", "title", "date", "venue", "capacity", "price", "status"
       FROM "events"
@@ -59,7 +60,7 @@ const createBooking = catchAsync(async (req, res) => {
         event: { select: { id: true, title: true, date: true, venue: true, price: true } },
       },
     });
-  });
+  }, { isolationLevel: 'ReadCommitted' });
 
   logger.info(
     {

@@ -122,27 +122,53 @@ const createEvent = catchAsync(async (req, res) => {
 });
 
 const updateEvent = catchAsync(async (req, res) => {
-  const event = await prisma.event.findUnique({ where: { id: req.params.id } });
-  if (!event) throw new AppError('Event not found', 404);
-  if (event.organizerId !== req.user.id) throw new AppError('You can only edit your own events', 403);
-  if (event.status === 'CANCELLED') throw new AppError('Cannot edit a cancelled event', 400);
+  const changesCapacity = req.body?.capacity !== undefined;
+  const applyUpdate = async (db) => {
+    // Capacity writers and booking creation lock the event before reading bookings.
+    const event = changesCapacity
+      ? (await db.$queryRaw`
+          SELECT "id", "organizerId", "status"
+          FROM "events"
+          WHERE "id" = ${req.params.id}
+          FOR UPDATE
+        `)[0]
+      : await db.event.findUnique({ where: { id: req.params.id } });
+    if (!event) throw new AppError('Event not found', 404);
+    if (event.organizerId !== req.user.id) throw new AppError('You can only edit your own events', 403);
+    if (event.status === 'CANCELLED') throw new AppError('Cannot edit a cancelled event', 400);
 
-  const data = updateEventSchema.parse(req.body);
+    const data = updateEventSchema.parse(req.body);
 
-  if (data.date && new Date(data.date) <= new Date()) {
-    throw new AppError('Event date must be in the future', 400);
-  }
+    if (data.date && new Date(data.date) <= new Date()) {
+      throw new AppError('Event date must be in the future', 400);
+    }
 
-  if (data.categoryId) {
-    const category = await prisma.category.findUnique({ where: { id: data.categoryId } });
-    if (!category) throw new AppError('Category not found', 404);
-  }
+    if (data.categoryId) {
+      const category = await db.category.findUnique({ where: { id: data.categoryId } });
+      if (!category) throw new AppError('Category not found', 404);
+    }
 
-  const updated = await prisma.event.update({
-    where: { id: req.params.id },
-    data,
-    include: { category: true },
-  });
+    if (changesCapacity) {
+      const confirmed = await db.booking.aggregate({
+        where: { eventId: event.id, status: 'CONFIRMED' },
+        _sum: { quantity: true },
+      });
+      if (data.capacity < (confirmed._sum.quantity ?? 0)) {
+        throw new AppError('Capacity cannot be less than confirmed ticket quantity', 409);
+      }
+    }
+
+    const updated = await db.event.update({
+      where: { id: req.params.id },
+      data,
+      include: { category: true },
+    });
+    return { updated, data };
+  };
+
+  const { updated, data } = changesCapacity
+    ? await prisma.$transaction(applyUpdate, { isolationLevel: 'ReadCommitted' })
+    : await applyUpdate(prisma);
 
   logger.info(
     {

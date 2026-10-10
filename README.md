@@ -220,6 +220,37 @@ All API endpoints are prefixed with `/api/v1`.
 | `PATCH`  | `/events/:id` | Required | `ORGANIZER` (Owner) | Update an event (only before event date)                  |
 | `DELETE` | `/events/:id` | Required | `ORGANIZER` (Owner) | Cancel/Soft-delete an event                               |
 
+An owner PATCH that supplies `capacity` must keep it at or above the **sum of
+CONFIRMED booking quantities**, not the number of booking rows. A reduction from
+10 to 2 with five confirmed tickets returns **409 Conflict**:
+
+```json
+{"status":"error","message":"Capacity cannot be less than confirmed ticket quantity"}
+```
+
+No fields in that PATCH are saved. Capacity equal to the confirmed quantity is
+allowed, as are increases; capacity must still be a positive integer. Cancelled
+bookings do not contribute to the total. Existing authorization and event checks
+still apply.
+
+Capacity PATCH and booking creation use the same PostgreSQL event-row
+`SELECT ... FOR UPDATE` lock inside a Prisma interactive transaction at
+`READ COMMITTED`. Both lock the event first, validate the locked row, read the
+confirmed quantity, and write before releasing the lock at commit. A waiting
+writer therefore makes its decision after the preceding writer commits. PATCH
+without capacity keeps its existing path and response shape.
+
+Same-event writes serialize. This protocol protects participating API writers;
+it does not constrain arbitrary SQL clients or repair already-invalid data.
+There is no new migration or cross-table database constraint. Transaction failures
+roll back; this change adds no automatic retries or special database-error mapping.
+
+The concurrency regressions use separate PostgreSQL fixture/observer connections
+and `pg_blocking_pids` to establish booking-first and reduction-first lock queues
+before releasing either request. Bounded waits and request deadlines fail a broken
+schedule; `finally` releases fixture locks and drains requests. The original
+ten-request last-ticket regression remains in place.
+
 ### Ticket Bookings
 
 | Method   | Endpoint        | Auth     | Role               | Description                 |
