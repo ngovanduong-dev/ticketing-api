@@ -84,6 +84,9 @@ const cleanupTestData = async () => {
     where: { slug: { startsWith: TEST_PREFIX } },
   });
 
+  const accounts = await prisma.user.findMany({ where: { email: { startsWith: TEST_PREFIX } }, select: { id: true } });
+  await prisma.idempotencyRecord.deleteMany({ where: { userId: { in: accounts.map((account) => account.id) } } });
+
   await prisma.user.deleteMany({
     where: { email: { startsWith: TEST_PREFIX } },
   });

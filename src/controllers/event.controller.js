@@ -82,6 +82,7 @@ const listEvents = catchAsync(async (req, res) => {
 const getEvent = catchAsync(async (req, res) => {
   const event = await prisma.event.findUnique({
     where: { id: req.params.id },
+    omit: { version: true },
     include: {
       category: true,
       organizer: { select: { id: true, name: true } },
@@ -106,6 +107,7 @@ const createEvent = catchAsync(async (req, res) => {
 
   const event = await prisma.event.create({
     data: { ...data, price: data.price, organizerId: req.user.id },
+    omit: { version: true },
     include: { category: true, organizer: { select: { id: true, name: true } } },
   });
 
@@ -160,7 +162,8 @@ const updateEvent = catchAsync(async (req, res) => {
 
     const updated = await db.event.update({
       where: { id: req.params.id },
-      data,
+      data: { ...data, version: { increment: 1 } },
+      omit: { version: true },
       include: { category: true },
     });
     return { updated, data };
@@ -189,7 +192,7 @@ const deleteEvent = catchAsync(async (req, res) => {
 
   await prisma.event.update({
     where: { id: req.params.id },
-    data: { status: 'CANCELLED' },
+    data: { status: 'CANCELLED', version: { increment: 1 } },
   });
 
   logger.info(

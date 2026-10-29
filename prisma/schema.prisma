@@ -36,6 +36,7 @@ model Event {
   date        DateTime
   venue       String
   capacity    Int
+  version     Int         @default(1)
   price       Decimal     @db.Decimal(10, 2)
   status      EventStatus @default(PUBLISHED)
   categoryId  String
@@ -67,6 +68,21 @@ model Booking {
   @@index([userId, createdAt])
   @@index([eventId, status])
   @@map("bookings")
+}
+
+model IdempotencyRecord {
+  key            String   @id @db.VarChar(128)
+  userId         String   @db.VarChar(64)
+  endpoint       String   @db.VarChar(255)
+  payloadHash    String   @db.VarChar(64)
+  status         String   @db.VarChar(32)
+  responseStatus Int?
+  responseBody   Json?
+  lockedUntil    DateTime
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([userId, createdAt])
 }
 
 enum Role {

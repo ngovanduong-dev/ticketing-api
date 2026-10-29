@@ -4,6 +4,30 @@ const logger = require('../lib/logger');
 const AppError = require('../utils/AppError');
 const { catchAsync } = require('../middlewares/error.middleware');
 
+const { bookInTransaction } = require('../services/booking.service');
+const { executeWithIdempotency } = require('../services/idempotency.service');
+const { bookBundleInTransaction, transactionOptions, bundleSchema } = require('../services/concurrencyStrategies.service');
+
+async function executeBooking(req, res, endpoint, handler) {
+  let result;
+  if (req.idempotencyKey) {
+    result = await executeWithIdempotency({
+      prisma, idempotencyKey: req.idempotencyKey, userId: req.user.id,
+      endpoint, requestBody: req.body, handler,
+    });
+    res.set('Idempotency-Replayed', String(result.replayed));
+  } else {
+    result = await prisma.$transaction(handler, transactionOptions);
+  }
+  if (result.statusCode === 201 && !result.replayed) {
+    const bookings = result.body.data.bookings ?? [result.body.data.booking];
+    for (const booking of bookings) {
+      logger.info({ bookingId: booking.id, eventId: booking.eventId, userId: req.user.id, quantity: booking.quantity }, 'Booking created');
+    }
+  }
+  return res.status(result.statusCode).json(result.body);
+}
+
 const createBookingSchema = z.object({
   eventId: z.string().uuid(),
   quantity: z.number().int().min(1).max(10),
@@ -12,67 +36,27 @@ const createBookingSchema = z.object({
 const createBooking = catchAsync(async (req, res) => {
   const { eventId, quantity } = createBookingSchema.parse(req.body);
 
-  const booking = await prisma.$transaction(async (tx) => {
-    // Match capacity updates: lock the event first, then read confirmed quantity.
-    const rows = await tx.$queryRaw`
-      SELECT "id", "title", "date", "venue", "capacity", "price", "status"
-      FROM "events"
-      WHERE "id" = ${eventId}
-      FOR UPDATE
-    `;
+  return executeBooking(req, res, 'POST /api/v1/bookings', async (tx) => {
+    const booking = await bookInTransaction(tx, { eventId, quantity, userId: req.user.id });
+    return { statusCode: 201, body: { status: 'success', data: { booking } } };
+  });
+});
 
-    if (rows.length === 0) throw new AppError('Event not found', 404);
-
-    const event = rows[0];
-    if (event.status !== 'PUBLISHED') throw new AppError('Event is not available for booking', 400);
-    if (new Date(event.date) <= new Date()) throw new AppError('Event has already passed', 400);
-
-    const bookedResult = await tx.booking.aggregate({
-      where: { eventId, status: 'CONFIRMED' },
-      _sum: { quantity: true },
-    });
-    const totalBooked = bookedResult._sum.quantity ?? 0;
-    const available = Number(event.capacity) - totalBooked;
-
-    if (quantity > available) {
-      logger.warn(
-        {
-          eventId,
-          userId: req.user.id,
-          requestedQuantity: quantity,
-          available,
-          totalBooked,
-        },
-        'Booking rejected because event capacity is insufficient'
-      );
-
-      throw new AppError(
-        available === 0 ? 'Event is sold out' : `Only ${available} tickets available`,
-        409
-      );
+const createBundle = catchAsync(async (req, res) => {
+  const items = bundleSchema.parse(req.body?.items);
+  return executeBooking(req, res, 'POST /api/v1/bookings/batch', async (tx) => {
+    const result = await bookBundleInTransaction(tx, { userId: req.user.id, items });
+    if (result.status !== 'SUCCESS') {
+      const errors = {
+        NOT_FOUND: [404, 'Event not found'],
+        INVALID_EVENT: [400, 'Event is not available for booking'],
+        INSUFFICIENT_TICKETS: [409, 'Insufficient tickets for bundle'],
+      };
+      const [status, message] = errors[result.status];
+      throw new AppError(message, status);
     }
-
-    const totalPrice = Number(event.price) * quantity;
-
-    return tx.booking.create({
-      data: { eventId, userId: req.user.id, quantity, totalPrice, status: 'CONFIRMED' },
-      include: {
-        event: { select: { id: true, title: true, date: true, venue: true, price: true } },
-      },
-    });
-  }, { isolationLevel: 'ReadCommitted' });
-
-  logger.info(
-    {
-      bookingId: booking.id,
-      eventId,
-      userId: req.user.id,
-      quantity,
-    },
-    'Booking created'
-  );
-
-  res.status(201).json({ status: 'success', data: { booking } });
+    return { statusCode: 201, body: { status: 'success', data: { bookings: result.bookings } } };
+  });
 });
 
 const getMyBookings = catchAsync(async (req, res) => {
@@ -88,25 +72,31 @@ const getMyBookings = catchAsync(async (req, res) => {
 });
 
 const cancelBooking = catchAsync(async (req, res) => {
-  const booking = await prisma.booking.findUnique({
-    where: { id: req.params.id },
-    include: { event: { select: { date: true, title: true } } },
-  });
+  const updated = await prisma.$transaction(async (tx) => {
+    const snapshot = await tx.booking.findUnique({ where: { id: req.params.id } });
+    if (!snapshot) throw new AppError('Booking not found', 404);
+    await tx.$queryRaw`SELECT id FROM events WHERE id = ${snapshot.eventId} FOR UPDATE`;
+    const booking = await tx.booking.findUnique({
+      where: { id: req.params.id },
+      include: { event: { select: { date: true, title: true } } },
+    });
 
-  if (!booking) throw new AppError('Booking not found', 404);
-  if (booking.userId !== req.user.id) throw new AppError('Forbidden', 403);
-  if (booking.status === 'CANCELLED') throw new AppError('Booking is already cancelled', 400);
-  if (new Date(booking.event.date) <= new Date()) {
-    throw new AppError('Cannot cancel booking for past events', 400);
-  }
+    if (!booking) throw new AppError('Booking not found', 404);
+    if (booking.userId !== req.user.id) throw new AppError('Forbidden', 403);
+    if (booking.status === 'CANCELLED') throw new AppError('Booking is already cancelled', 400);
+    if (new Date(booking.event.date) <= new Date()) {
+      throw new AppError('Cannot cancel booking for past events', 400);
+    }
 
-  const updated = await prisma.booking.update({
-    where: { id: req.params.id },
-    data: { status: 'CANCELLED' },
-    include: {
-      event: { select: { id: true, title: true, date: true } },
-    },
-  });
+    await tx.event.update({ where: { id: booking.eventId }, data: { version: { increment: 1 } } });
+    return tx.booking.update({
+      where: { id: req.params.id },
+      data: { status: 'CANCELLED' },
+      include: {
+        event: { select: { id: true, title: true, date: true } },
+      },
+    });
+  }, transactionOptions);
 
   logger.info(
     {
@@ -120,4 +110,4 @@ const cancelBooking = catchAsync(async (req, res) => {
   res.json({ status: 'success', data: { booking: updated } });
 });
 
-module.exports = { createBooking, getMyBookings, cancelBooking };
+module.exports = { createBundle, createBooking, getMyBookings, cancelBooking };
