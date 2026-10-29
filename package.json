@@ -13,7 +13,8 @@
     "test": "npm run test:config && vitest run",
     "test:config": "node --test tests/config/*.test.cjs",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "benchmark:concurrency": "node scripts/benchmark-concurrency.js"
   },
   "engines": {
     "node": "24.x"

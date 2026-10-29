@@ -23,6 +23,7 @@ src/
 ├── lib/              # Shared library clients (Prisma client instance)
 ├── middlewares/      # JWT authentication, authorization & error handling
 ├── routes/           # API route definitions
+├── services/         # Booking transactions, idempotency and concurrency strategies
 ├── utils/            # Shared utilities (AppError class)
 ├── app.js            # Express app configuration & middleware staging
 └── server.js         # Entry point of the application
@@ -156,10 +157,8 @@ same database concurrently.
 
 The GitHub Actions workflow runs on Ubuntu with Node 24 and a fresh PostgreSQL 16
 service. It performs the five commands above, applying only committed migrations
-before running the suite. Local verification used Node 24.21.0 and PostgreSQL
-16.15: both migrations applied to an empty database, 11 configuration tests and
-all 30 existing regressions passed. See the PR's actual Actions result for CI
-status; the workflow does not verify deployment or production behavior.
+before running the suite. See the actual Actions result for CI status; local
+results do not establish CI success, deployment or production behavior.
 
 When finished, remove the disposable instance and unset test mode before ordinary
 development commands:
@@ -242,8 +241,8 @@ without capacity keeps its existing path and response shape.
 
 Same-event writes serialize. This protocol protects participating API writers;
 it does not constrain arbitrary SQL clients or repair already-invalid data.
-There is no new migration or cross-table database constraint. Transaction failures
-roll back; this change adds no automatic retries or special database-error mapping.
+There is no cross-table database constraint. Transaction failures roll back;
+the default booking path does not retry database errors automatically.
 
 The concurrency regressions use separate PostgreSQL fixture/observer connections
 and `pg_blocking_pids` to establish booking-first and reduction-first lock queues
@@ -258,3 +257,117 @@ ten-request last-ticket regression remains in place.
 | `POST`   | `/bookings`     | Required | `ATTENDEE`         | Book tickets for an event   |
 | `GET`    | `/bookings/me`  | Required | `ATTENDEE`         | Retrieve my booking history |
 | `DELETE` | `/bookings/:id` | Required | `ATTENDEE` (Owner) | Cancel a booking            |
+
+## Concurrency Architecture & Benchmark Metrics
+
+Inventory remains `capacity - SUM(CONFIRMED booking.quantity)`. The migration adds
+`Event.version` with a default of 1 and a PostgreSQL `IdempotencyRecord` table; it
+does not introduce a second inventory counter. Existing event responses omit the
+internal version field.
+
+### Pessimistic Row Locking and Optimistic Concurrency Control
+
+`POST /api/v1/bookings` continues to acquire `SELECT ... FOR UPDATE` on the event
+before checking confirmed quantities. Creation, cancellation and capacity changes
+use the same event-first lock protocol at `READ COMMITTED`. Booking cancellation
+re-reads the booking after acquiring the lock. All booking mutations and event
+updates increment the version in the same transaction as their effects.
+
+`bookWithOptimisticLock` provides a service-level alternative. It reads the event
+and confirmed quantity, then performs `UPDATE ... WHERE id = ? AND version = ?`.
+A successful compare-and-swap (CAS) increments the version and inserts the booking
+within one transaction. A stale version returns `VERSION_CONFLICT`; bounded retries
+start a fresh transaction and repeat validation. The existing HTTP booking route
+keeps its pessimistic strategy.
+
+Row locking serializes contenders before the inventory decision. CAS permits
+concurrent reads but can spend more queries on retries and still takes a row lock
+for the update. `maxRetries` denotes the total attempt budget, including the first
+attempt. One attempt does not guarantee selling every remaining ticket. The tests
+check conservation and version increments for both one and five attempts; a
+separate sequential phase checks remaining inventory after the one-attempt burst.
+Direct SQL writers must follow the same version and locking protocol.
+
+### Deadlock-Free Lexicographical Lock Ordering
+
+`POST /api/v1/bookings/batch` accepts an authenticated `ATTENDEE` and a body such as:
+
+```json
+{"items":[{"eventId":"<event UUID>","quantity":1},{"eventId":"<another event UUID>","quantity":2}]}
+```
+
+The limit is 50 input items and 10 tickets per distinct event after duplicate IDs
+are aggregated. PostgreSQL locks all matching events with
+`ORDER BY "id" ASC FOR UPDATE`, using the database collation consistently instead
+of a JavaScript locale-dependent sort. All events are checked before any booking
+is inserted. A successful response is `201` with
+`{"status":"success","data":{"bookings":[...]}}`; missing events return `404`,
+unavailable/past events or invalid inputs return `400`, and insufficient capacity
+returns `409`. A failure leaves every event in the bundle unchanged.
+
+This ordering removes the opposite-order event-lock cycle among participating
+bundle writers. It is not a guarantee against every possible PostgreSQL deadlock:
+other transactions must obey the same ordering. The regression submits 20 bundles
+in opposite input orders against two events with 10 tickets each and checks 10
+successes, 10 inventory rejections, no database errors and zero remaining tickets.
+
+### SHA-256 Payload-Hashed Idempotency
+
+Both booking POST routes accept an optional `Idempotency-Key` containing 1–128
+visible ASCII characters without spaces. Authentication, role checks, rate limits
+and input validation still apply. The hash covers the entire JSON body, including
+unknown fields: object keys are recursively sorted, nested values are retained,
+and array order remains significant.
+
+Keys are global and bound to the authenticated account and canonical route:
+
+| Condition | Response |
+| :--- | :--- |
+| Completed key with the same body | Original status and JSON body, `Idempotency-Replayed: true` |
+| Completed key with a different body | `422`, `IDEMPOTENCY_PAYLOAD_MISMATCH` |
+| Key bound to another account or route | `403`, `IDEMPOTENCY_KEY_OWNERSHIP_VIOLATION` |
+| Key currently locked by another transaction | `409`, `IDEMPOTENCY_REQUEST_IN_FLIGHT` |
+
+Each execution acquires a nonblocking transaction-scoped PostgreSQL advisory lock
+derived from the key. The record, booking effects and serialized response commit
+together. A lost HTTP response can therefore be retried without inserting another
+booking. A failure before commit rolls everything back; failed handlers are not
+cached. A retry during an active transaction returns `409` before inspecting any
+uncommitted payload. Hash collisions in the advisory-lock namespace can cause a
+conservative temporary `409`, but cannot mix stored responses.
+
+The handler must perform all database writes through the supplied transaction;
+external side effects are outside this guarantee. Transaction options allow 10
+seconds to acquire a connection and 30 seconds for execution. The `lockedUntil`
+timestamp is diagnostic, not permission to steal a live operation. Normal execution
+never commits an `IN_PROGRESS` record; any such persisted record requires manual
+investigation. Completed records currently have no automatic expiry. Deleting a
+record permits the key to execute again, so retention needs an explicit operational
+policy before introducing cleanup. Retrying without a key retains the original
+booking behavior.
+
+### Reproducing the Measurements
+
+After configuring the dedicated test database and applying migrations as described
+above, run:
+
+```bash
+npm test
+npm run benchmark:concurrency
+```
+
+The benchmark requires the same guarded `TEST_DATABASE_URL` and test-only
+`JWT_SECRET` as the regression suite. It creates and removes its own fixtures.
+Run it alone against a disposable database. It prints JSON containing Node and
+PostgreSQL versions, platform, workload sizes, outcome counts, elapsed wall time,
+throughput and nearest-rank p50/p95/p99 latency in milliseconds.
+
+The single-event workloads issue 25 simultaneous calls for five tickets using row
+locks, one CAS attempt and five CAS attempts. The bundle workload issues 20 calls
+with alternating event order against two events with 10 tickets each. Measurements
+include the default 10-connection pool's queueing time, transaction work and rejected
+calls; they exclude HTTP and authentication. Strategies run in that sequence without
+a dedicated warm-up. Throughput counts all completed calls, not successful bookings.
+Small local workloads are regression telemetry, not capacity estimates or a basis
+for declaring one strategy faster. The suite verifies finite positive percentiles
+and throughput, percentile ordering, rejected-task accounting and empty workloads.
